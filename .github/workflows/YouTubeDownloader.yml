@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: '🎬 YouTube Video URL (یا عبارت جستجو)'
+        description: '🎬 YouTube Video URL (یا عبارت جستجوسسسسسسسسسسسسسس)'
         required: false
         type: string
       search_query:
