@@ -1,15 +1,11 @@
-name: 🎯 YouTube Downloader (Stable)
+name: 🎯 YouTube Downloader (GitHub Only)
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: '🎬 YouTube Video URL (یا عبارت جستجوسسسسسسسسسسسسسس)'
-        required: false
-        type: string
       search_query:
         description: '🔍 عبارت جستجو در یوتیوب'
-        required: false
+        required: true
         type: string
       type:
         description: '📦 Output Type'
@@ -19,170 +15,84 @@ on:
           - video
           - audio
         default: 'video'
-      quality:
-        description: '🎚️ Quality'
-        required: false
-        type: string
-        default: '720p'
-      split_threshold_mb:
-        description: '📦 Split files larger than (MB) — 0 = never'
-        required: false
-        type: number
-        default: 90
-
-# تنظیمات امنیتی: دسترسی write فقط برای همین job داده می‌شود
-permissions:
-  contents: read
 
 jobs:
   download-and-process:
-    name: 🚀 Stable Direct Download
+    name: 🚀 Download & Process YouTube Content
     runs-on: ubuntu-latest
-    # فقط به این job دسترسی write می‌دهیم
     permissions:
       contents: write
+    
     steps:
       - name: 📂 Clone Repository
         uses: actions/checkout@v4
-
-      # --- 1. راه‌اندازی ابزارهای مورد نیاز yt-dlp ---
-      - name: ⚙️ Setup yt-dlp, FFmpeg, and Deno
-        uses: AnimMouse/setup-yt-dlp@v3
         with:
-          # نصب خودکار FFmpeg برای ترکیب ویدیو و صدا
-          ffmpeg: true
-          # نصب خودکار aria2 برای دانلود چندبخشی و افزایش سرعت
-          aria2: true
-          # نصب Deno برای حل چالش‌های جاوااسکریپتی یوتیوب (حل مشکل 403)
-          ejs-node: true
-          # به روز رسانی خودکار yt-dlp به آخرین نسخه stable
-          update: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 2. تبدیل جستجو به لینک (اختیاری) ---
-      - name: 🔍 Convert Search Query to URL
-        id: search
-        env:
-          SEARCH_QUERY: ${{ github.event.inputs.search_query }}
-          URL: ${{ github.event.inputs.url }}
+      - name: 🔧 Install yt-dlp
         run: |
-          set -e
-          if [[ -n "$URL" ]]; then
-            echo "YT_URL=$URL" >> $GITHUB_ENV
-          elif [[ -n "$SEARCH_QUERY" ]]; then
-            echo "🔎 Searching YouTube for: $SEARCH_QUERY"
-            VIDEO_URL=$(yt-dlp --get-id "ytsearch1:$SEARCH_QUERY" --print "https://youtu.be/%(id)s" 2>/dev/null)
-            if [[ -z "$VIDEO_URL" ]]; then
-              echo "❌ No video found for: $SEARCH_QUERY"
-              exit 1
-            fi
-            echo "✅ Found video: $VIDEO_URL"
-            echo "YT_URL=$VIDEO_URL" >> $GITHUB_ENV
-          else
-            echo "❌ Either 'url' or 'search_query' must be provided."
-            exit 1
-          fi
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip ffmpeg
+          python3 -m pip install yt-dlp
+          echo "✅ yt-dlp installed successfully"
 
-      # --- 3. دانلود مستقیم و پایدار ---
-      - name: ⬇️ Direct Download with yt-dlp
+      - name: 🔍 Search and Download
         id: download
         run: |
-          mkdir -p ./downloads/temp
-          cd ./downloads/temp
+          SEARCH_TERM="${{ github.event.inputs.search_query }}"
+          OUTPUT_TYPE="${{ github.event.inputs.type }}"
           
-          echo "🎬 Downloading from: ${{ env.YT_URL }}"
+          mkdir -p downloads
+          cd downloads
           
-          # ساختار فرمان بر اساس نوع خروجی (video/audio)
-          if [[ "${{ github.event.inputs.type }}" == "audio" ]]; then
-            # انتخاب کیفیت صدا (مقادیر مجاز: 64, 128, 192, 320)
-            BITRATE=$(echo "${{ github.event.inputs.quality }}" | sed 's/kbps//')
-            case $BITRATE in
-              64|128|192|320) ;;
-              *) BITRATE=192 ;;
-            esac
-            CMD="yt-dlp -f bestaudio --extract-audio --audio-format mp3 --audio-quality ${BITRATE} --output '%(title)s_%(id)s_${BITRATE}kbps.%(ext)s' --no-playlist --restrict-filenames --progress --no-mtime -- '${{ env.YT_URL }}'"
+          echo "🔎 Searching YouTube for: $SEARCH_TERM"
+          
+          # Search and get video URL without external API
+          if [[ "$OUTPUT_TYPE" == "audio" ]]; then
+            # Download as MP3
+            yt-dlp -f bestaudio \
+              --extract-audio \
+              --audio-format mp3 \
+              --audio-quality 192K \
+              --output "%(title)s_%(id)s.%(ext)s" \
+              --no-playlist \
+              --restrict-filenames \
+              "ytsearch1:$SEARCH_TERM"
           else
-            # انتخاب کیفیت ویدیو (مقادیر مجاز: 144, 360, 480, 720, 1080)
-            case "${{ github.event.inputs.quality }}" in
-              "144p")  SELECTOR="bestvideo[height<=144]+bestaudio/best[height<=144]" ;;
-              "360p")  SELECTOR="bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
-              "480p")  SELECTOR="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
-              "720p")  SELECTOR="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
-              "1080p") SELECTOR="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
-              *)       SELECTOR="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
-            esac
-            CMD="yt-dlp -f '$SELECTOR' --merge-output-format mp4 --output '%(title)s_%(id)s_${{ github.event.inputs.quality }}.%(ext)s' --no-playlist --restrict-filenames --progress --no-mtime -- '${{ env.YT_URL }}'"
+            # Download as MP4 (best quality available)
+            yt-dlp -f "bestvideo+bestaudio" \
+              --merge-output-format mp4 \
+              --output "%(title)s_%(id)s.%(ext)s" \
+              --no-playlist \
+              --restrict-filenames \
+              "ytsearch1:$SEARCH_TERM"
           fi
           
-          echo "▶️ Running: $CMD"
-          eval $CMD
-          
-          # پیدا کردن فایل دانلود شده
+          # Get downloaded filename
           DOWNLOADED_FILE=$(ls -1 | head -1)
           if [[ -z "$DOWNLOADED_FILE" ]]; then
-            echo "❌ No file downloaded!"
+            echo "❌ Download failed!"
             exit 1
           fi
           
-          # پاکسازی نام فایل
-          SAFE_NAME=$(echo "$DOWNLOADED_FILE" | sed 's/[^a-zA-Z0-9._-]/_/g')
-          [[ "$DOWNLOADED_FILE" != "$SAFE_NAME" ]] && mv "$DOWNLOADED_FILE" "$SAFE_NAME"
-          
-          echo "✅ Downloaded: $SAFE_NAME"
-          cd ../..
-          echo "FILENAME=$SAFE_NAME" >> $GITHUB_ENV
-          echo "FILEPATH=./downloads/temp/$SAFE_NAME" >> $GITHUB_ENV
+          echo "✅ Downloaded: $DOWNLOADED_FILE"
+          cd ..
+          echo "FILENAME=$DOWNLOADED_FILE" >> $GITHUB_ENV
 
-      # --- 4. تقسیم فایل در صورت نیاز ---
-      - name: ✂️ Split Large Files (Optional)
-        run: |
-          THRESHOLD_MB="${{ github.event.inputs.split_threshold_mb }}"
-          THRESHOLD_BYTES=$((THRESHOLD_MB * 1024 * 1024))
-          FILEPATH="${{ env.FILEPATH }}"
-          FILENAME="${{ env.FILENAME }}"
-          
-          if [[ ! -f "$FILEPATH" ]]; then
-            echo "❌ File not found: $FILEPATH"
-            exit 1
-          fi
-          
-          SIZE=$(stat -c%s "$FILEPATH")
-          SIZE_MB=$((SIZE / 1024 / 1024))
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📄 File: $FILENAME"
-          echo "📏 Size: ${SIZE_MB} MB"
-          
-          if [[ $THRESHOLD_BYTES -gt 0 && $SIZE -gt $THRESHOLD_BYTES ]]; then
-            echo "✂️ Splitting file (threshold=${THRESHOLD_MB}MB)"
-            cd ./downloads
-            zip -r -s "${THRESHOLD_MB}m" "${FILENAME}.zip" "temp/${FILENAME}"
-            cd ..
-            PARTS_COUNT=$(ls ./downloads/${FILENAME}.z* 2>/dev/null | wc -l)
-            echo "✅ Created $PARTS_COUNT parts"
-            rm "$FILEPATH"
-          else
-            [[ $THRESHOLD_BYTES -eq 0 ]] && echo "📁 Split disabled" || echo "📁 File under threshold"
-            mv "$FILEPATH" "./downloads/"
-          fi
-          
-          rm -rf ./downloads/temp
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📂 Final files in ./downloads/:"
-          ls -lh ./downloads/ | tail -n +2 | awk '{print "  • " $NF " (" $5 ")"}'
-
-      # --- 5. آپلود در مخزن ---
       - name: 📤 Commit and Push to Repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          git add ./downloads/
+          git add downloads/
+          
           if git diff --staged --quiet; then
             echo "ℹ️ No changes to commit"
             exit 0
           fi
           
           git commit -m "chore: add YouTube content [skip ci]"
-          git pull --rebase origin ${{ github.ref_name }}
-          git push origin HEAD:${{ github.ref_name }}
-          echo "🎉 All files successfully uploaded."
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin HEAD:"${{ github.ref_name }}"
+          
+          echo "🎉 File successfully uploaded to repository"
