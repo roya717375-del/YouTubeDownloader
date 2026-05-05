@@ -45,18 +45,71 @@ jobs:
       # ============================================
       # حالت جستجو (اگر search_query پر شده باشد)
       # ============================================
-      - name: 🔎 Search YouTube and show results
+      - name: 🔎 Search YouTube and save results to file
         if: ${{ github.event.inputs.search_query != '' && github.event.inputs.url == '' }}
         run: |
           SEARCH="${{ github.event.inputs.search_query }}"
+          OUTPUT_FILE="search_results.txt"
+          
           echo "🟢 جستجو برای: $SEARCH"
           echo "======================================"
+          echo "📝 نتایج جستجو برای: $SEARCH" > "$OUTPUT_FILE"
+          echo "تاریخ جستجو: $(date)" >> "$OUTPUT_FILE"
+          echo "======================================" >> "$OUTPUT_FILE"
+          echo "" >> "$OUTPUT_FILE"
           
-          # روش جایگزین: استفاده از yt-dlp بدون jq برای جلوگیری از خطا
-          yt-dlp --flat-playlist --print "%(title)s | %(channel)s | https://youtu.be/%(id)s" "ytsearch10:$SEARCH"
+          # دریافت 20 نتیجه اول با توضیحات کامل
+          echo "🟡 در حال دریافت 20 نتیجه اول..."
+          
+          # استفاده از yt-dlp با خروجی JSON برای اطلاعات کامل‌تر
+          yt-dlp --flat-playlist --dump-json "ytsearch20:$SEARCH" | python3 << 'PYEOF'
+          import sys, json
+          results = []
+          for line in sys.stdin:
+              if line.strip():
+                  try:
+                      data = json.loads(line)
+                      results.append(data)
+                  except:
+                      pass
+          
+          with open('search_results.txt', 'a', encoding='utf-8') as f:
+              for idx, item in enumerate(results, 1):
+                  title = item.get('title', 'بدون عنوان')
+                  channel = item.get('channel', 'ناشناس')
+                  video_id = item.get('id', '')
+                  url = f"https://youtu.be/{video_id}"
+                  duration = item.get('duration', 0)
+                  if duration:
+                      minutes = duration // 60
+                      seconds = duration % 60
+                      duration_str = f"{minutes}:{seconds:02d}"
+                  else:
+                      duration_str = "نامشخص"
+                  description = item.get('description', '')
+                  if description:
+                      description = description[:200] + '...' if len(description) > 200 else description
+                  else:
+                      description = "توضیحاتی موجود نیست"
+                  
+                  f.write(f"\n{idx}. 🎬 عنوان: {title}\n")
+                  f.write(f"   📺 کانال: {channel}\n")
+                  f.write(f"   ⏱️ مدت: {duration_str}\n")
+                  f.write(f"   🔗 لینک: {url}\n")
+                  f.write(f"   📝 توضیحات: {description}\n")
+                  f.write(f"   {'-' * 60}\n")
+          
+          print(f"✅ {len(results)} نتیجه در فایل search_results.txt ذخیره شد.")
+          PYEOF
           
           echo "======================================"
-          echo "✅ لینک مورد نظر را کپی کرده و دوباره workflow را با 'url' اجرا کنید."
+          echo "✅ نتایج در فایل 'search_results.txt' ذخیره شد."
+          echo "📁 برای مشاهده نتایج، فایل را از پوشه اصلی مخزن دانلود کنید."
+          
+          # نمایش خلاصه از نتایج در لاگ
+          echo ""
+          echo "📋 خلاصه نتایج:"
+          head -30 search_results.txt
 
       # ============================================
       # حالت دانلود (اگر url پر شده باشد)
@@ -74,13 +127,11 @@ jobs:
           echo "🟢 شروع دانلود از: $URL"
           
           if [[ "$TYPE" == "audio" ]]; then
-            # استخراج صدا با کیفیت 192kbps (پایدارتر)
             yt-dlp -f bestaudio --extract-audio --audio-format mp3 \
               --audio-quality 192K --output "%(title)s_%(id)s.%(ext)s" \
               --no-check-certificate \
               "$URL"
           else
-            # دانلود ویدیو با کیفیت 720p (پایدارتر)
             yt-dlp -f "best[height<=720]" \
               --output "%(title)s_%(id)s.%(ext)s" \
               --no-check-certificate \
@@ -97,12 +148,23 @@ jobs:
           
           cd ..
 
-      - name: 📤 Commit and push downloaded files
-        if: ${{ github.event.inputs.url != '' && success() }}
+      - name: 📤 Commit and push files (search results or downloaded files)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
-          git diff --staged --quiet || git commit -m "chore: add YouTube content [skip ci]"
+          
+          # اگر فایل نتایج جستجو وجود دارد، آن را هم اضافه کن
+          if [ -f "search_results.txt" ]; then
+            git add search_results.txt
+            echo "✅ فایل نتایج جستجو به مخزن اضافه شد."
+          fi
+          
+          # اگر پوشه دانلود وجود دارد و خالی نیست، آن را اضافه کن
+          if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
+            git add downloads/
+            echo "✅ فایل‌های دانلود شده به مخزن اضافه شدند."
+          fi
+          
+          git diff --staged --quiet || git commit -m "chore: add YouTube search results or content [skip ci]"
           git pull --rebase origin ${{ github.ref_name }}
           git push origin HEAD:${{ github.ref_name }}
