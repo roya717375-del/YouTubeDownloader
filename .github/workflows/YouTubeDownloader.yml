@@ -1,98 +1,109 @@
-name: 🎯 YouTube Downloader (GitHub Only)
+name: 🔍 YouTube Search & Download
 
 on:
   workflow_dispatch:
     inputs:
       search_query:
-        description: '🔍 عبارت جستجو در یوتیوب'
-        required: true
+        description: '🔍 عبارت جستجو (برای جستجو)'
+        required: false
+        type: string
+      url:
+        description: '🎬 لینک مستقیم یوتیوب (برای دانلود)'
+        required: false
         type: string
       type:
-        description: '📦 Output Type'
-        required: true
+        description: '📦 نوع خروجی (برای دانلود)'
+        required: false
         type: choice
         options:
           - video
           - audio
         default: 'video'
+      quality:
+        description: '🎚️ کیفیت (720p, 1080p, یا 128kbps)'
+        required: false
+        type: string
+        default: '720p'
 
 jobs:
-  download-and-process:
-    name: 🚀 Download & Process YouTube Content
+  process:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    
     steps:
-      - name: 📂 Clone Repository
+      - name: 📂 Clone repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🔧 Install yt-dlp
+      - name: 🔧 Install yt-dlp and ffmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip ffmpeg
+          sudo apt-get install -y ffmpeg python3-pip
           python3 -m pip install yt-dlp
-          echo "✅ yt-dlp installed successfully"
 
-      - name: 🔍 Search and Download
-        id: download
+      # ============================================
+      # حالت جستجو (اگر search_query پر شده باشد)
+      # ============================================
+      - name: 🔎 Search YouTube and show results
+        if: ${{ github.event.inputs.search_query != '' && github.event.inputs.url == '' }}
         run: |
-          SEARCH_TERM="${{ github.event.inputs.search_query }}"
-          OUTPUT_TYPE="${{ github.event.inputs.type }}"
+          SEARCH="${{ github.event.inputs.search_query }}"
+          echo "🟢 جستجو برای: $SEARCH"
+          echo "======================================"
+          # دریافت ۱۰ نتیجه اول به صورت JSON مسطح
+          yt-dlp --flat-playlist --dump-json "ytsearch10:$SEARCH" | jq -r '
+            .[] | 
+            "\(.index). 🎬 عنوان: \(.title)\n   📺 کانال: \(.channel)\n   ⏱️ مدت: \(.duration // 0)s\n   🔗 لینک: https://youtu.be/\(.id)\n   -------------------------------------"
+          '
+          echo "======================================"
+          echo "✅ لینک مورد نظر را کپی کرده و دوباره workflow را با 'url' اجرا کنید."
+
+      # ============================================
+      # حالت دانلود (اگر url پر شده باشد)
+      # ============================================
+      - name: ⬇️ Download from URL
+        if: ${{ github.event.inputs.url != '' }}
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          TYPE="${{ github.event.inputs.type }}"
+          QUALITY="${{ github.event.inputs.quality }}"
           
           mkdir -p downloads
           cd downloads
           
-          echo "🔎 Searching YouTube for: $SEARCH_TERM"
-          
-          # Search and get video URL without external API
-          if [[ "$OUTPUT_TYPE" == "audio" ]]; then
-            # Download as MP3
-            yt-dlp -f bestaudio \
-              --extract-audio \
-              --audio-format mp3 \
-              --audio-quality 192K \
-              --output "%(title)s_%(id)s.%(ext)s" \
-              --no-playlist \
-              --restrict-filenames \
-              "ytsearch1:$SEARCH_TERM"
+          if [[ "$TYPE" == "audio" ]]; then
+            # استخراج صدا با کیفیت مشخص شده
+            BITRATE=$(echo "$QUALITY" | sed 's/kbps//')
+            case $BITRATE in
+              64|128|192|320) ;;
+              *) BITRATE=192 ;;
+            esac
+            yt-dlp -f bestaudio --extract-audio --audio-format mp3 \
+              --audio-quality "$BITRATE" --output "%(title)s_%(id)s_${BITRATE}kbps.%(ext)s" \
+              "$URL"
           else
-            # Download as MP4 (best quality available)
-            yt-dlp -f "bestvideo+bestaudio" \
-              --merge-output-format mp4 \
-              --output "%(title)s_%(id)s.%(ext)s" \
-              --no-playlist \
-              --restrict-filenames \
-              "ytsearch1:$SEARCH_TERM"
+            # دانلود ویدیو با کیفیت مشخص شده
+            case "$QUALITY" in
+              "144p")  FORMAT="bestvideo[height<=144]+bestaudio/best[height<=144]" ;;
+              "360p")  FORMAT="bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
+              "480p")  FORMAT="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
+              "720p")  FORMAT="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+              "1080p") FORMAT="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
+              *)       FORMAT="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+            esac
+            yt-dlp -f "$FORMAT" --merge-output-format mp4 \
+              --output "%(title)s_%(id)s_$QUALITY.%(ext)s" \
+              "$URL"
           fi
           
-          # Get downloaded filename
-          DOWNLOADED_FILE=$(ls -1 | head -1)
-          if [[ -z "$DOWNLOADED_FILE" ]]; then
-            echo "❌ Download failed!"
-            exit 1
-          fi
-          
-          echo "✅ Downloaded: $DOWNLOADED_FILE"
+          echo "✅ دانلود کامل شد."
           cd ..
-          echo "FILENAME=$DOWNLOADED_FILE" >> $GITHUB_ENV
 
-      - name: 📤 Commit and Push to Repository
+      - name: 📤 Commit and push downloaded files
+        if: ${{ github.event.inputs.url != '' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
           git add downloads/
-          
-          if git diff --staged --quiet; then
-            echo "ℹ️ No changes to commit"
-            exit 0
-          fi
-          
-          git commit -m "chore: add YouTube content [skip ci]"
-          git pull --rebase origin "${{ github.ref_name }}"
-          git push origin HEAD:"${{ github.ref_name }}"
-          
-          echo "🎉 File successfully uploaded to repository"
+          git diff --staged --quiet || git commit -m "chore: add YouTube content [skip ci]"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push origin HEAD:${{ github.ref_name }}
