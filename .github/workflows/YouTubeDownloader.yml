@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: '🎬 YouTube Video URL'
-        required: true
+        description: '🎬 YouTube Video URL (یا خالی بذارید و از جستجو استفاده کنید)'
+        required: false
+        type: string
+      search_query:
+        description: '🔍 عبارت جستجو در یوتیوب'
+        required: false
         type: string
       type:
         description: '📦 Output Type'
@@ -42,10 +46,39 @@ jobs:
       - name: 🔧 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip curl jq
+          sudo apt-get install -y zip curl jq python3-pip
+          sudo pip3 install yt-dlp
+
+      - name: 🔍 Convert Search Query to URL (if needed)
+        id: search
+        run: |
+          if [[ -n "${{ github.event.inputs.search_query }}" && -z "${{ github.event.inputs.url }}" ]]; then
+            SEARCH_TERM="${{ github.event.inputs.search_query }}"
+            echo "🔎 Searching YouTube for: $SEARCH_TERM"
+            
+            # Get first video URL using yt-dlp
+            VIDEO_URL=$(yt-dlp --get-id "ytsearch1:$SEARCH_TERM" --print "https://youtu.be/%(id)s" 2>/dev/null)
+            
+            if [[ -z "$VIDEO_URL" ]]; then
+              echo "❌ No video found for: $SEARCH_TERM"
+              exit 1
+            fi
+            
+            echo "✅ Found video: $VIDEO_URL"
+            echo "YT_URL=$VIDEO_URL" >> $GITHUB_ENV
+          elif [[ -n "${{ github.event.inputs.url }}" ]]; then
+            echo "YT_URL=${{ github.event.inputs.url }}" >> $GITHUB_ENV
+          else
+            echo "❌ Either 'url' or 'search_query' must be provided."
+            exit 1
+          fi
 
       - name: 🎯 Request Conversion via API
         id: converter
+        env:
+          YT_URL: ${{ env.YT_URL }}
+          OUTPUT_TYPE: ${{ github.event.inputs.type }}
+          QUALITY: ${{ github.event.inputs.quality }}
         run: |
           python3 << 'PYEOF'
           import os, sys, json, time, re
@@ -274,10 +307,6 @@ jobs:
           print(f"🎵 Type: {OUTPUT_TYPE} | Quality: {QUALITY}")
           print(f"{'='*50}")
           PYEOF
-        env:
-          YT_URL: ${{ github.event.inputs.url }}
-          OUTPUT_TYPE: ${{ github.event.inputs.type }}
-          QUALITY: ${{ github.event.inputs.quality }}
 
       - name: ⬇️ Download Converted File
         run: |
