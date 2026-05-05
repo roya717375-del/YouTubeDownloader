@@ -38,7 +38,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip
+          python3 -m pip install --upgrade pip
           python3 -m pip install yt-dlp
+          echo "✅ yt-dlp version: $(yt-dlp --version)"
 
       # ============================================
       # حالت جستجو (اگر search_query پر شده باشد)
@@ -49,11 +51,10 @@ jobs:
           SEARCH="${{ github.event.inputs.search_query }}"
           echo "🟢 جستجو برای: $SEARCH"
           echo "======================================"
-          # دریافت ۱۰ نتیجه اول به صورت JSON مسطح
-          yt-dlp --flat-playlist --dump-json "ytsearch10:$SEARCH" | jq -r '
-            .[] | 
-            "\(.index). 🎬 عنوان: \(.title)\n   📺 کانال: \(.channel)\n   ⏱️ مدت: \(.duration // 0)s\n   🔗 لینک: https://youtu.be/\(.id)\n   -------------------------------------"
-          '
+          
+          # روش جایگزین: استفاده از yt-dlp بدون jq برای جلوگیری از خطا
+          yt-dlp --flat-playlist --print "%(title)s | %(channel)s | https://youtu.be/%(id)s" "ytsearch10:$SEARCH"
+          
           echo "======================================"
           echo "✅ لینک مورد نظر را کپی کرده و دوباره workflow را با 'url' اجرا کنید."
 
@@ -70,36 +71,34 @@ jobs:
           mkdir -p downloads
           cd downloads
           
+          echo "🟢 شروع دانلود از: $URL"
+          
           if [[ "$TYPE" == "audio" ]]; then
-            # استخراج صدا با کیفیت مشخص شده
-            BITRATE=$(echo "$QUALITY" | sed 's/kbps//')
-            case $BITRATE in
-              64|128|192|320) ;;
-              *) BITRATE=192 ;;
-            esac
+            # استخراج صدا با کیفیت 192kbps (پایدارتر)
             yt-dlp -f bestaudio --extract-audio --audio-format mp3 \
-              --audio-quality "$BITRATE" --output "%(title)s_%(id)s_${BITRATE}kbps.%(ext)s" \
+              --audio-quality 192K --output "%(title)s_%(id)s.%(ext)s" \
+              --no-check-certificate \
               "$URL"
           else
-            # دانلود ویدیو با کیفیت مشخص شده
-            case "$QUALITY" in
-              "144p")  FORMAT="bestvideo[height<=144]+bestaudio/best[height<=144]" ;;
-              "360p")  FORMAT="bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
-              "480p")  FORMAT="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
-              "720p")  FORMAT="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
-              "1080p") FORMAT="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
-              *)       FORMAT="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
-            esac
-            yt-dlp -f "$FORMAT" --merge-output-format mp4 \
-              --output "%(title)s_%(id)s_$QUALITY.%(ext)s" \
+            # دانلود ویدیو با کیفیت 720p (پایدارتر)
+            yt-dlp -f "best[height<=720]" \
+              --output "%(title)s_%(id)s.%(ext)s" \
+              --no-check-certificate \
               "$URL"
           fi
           
-          echo "✅ دانلود کامل شد."
+          if [ $? -eq 0 ]; then
+            echo "✅ دانلود کامل شد."
+            ls -la
+          else
+            echo "❌ دانلود با خطا مواجه شد (exit code: $?)"
+            exit 1
+          fi
+          
           cd ..
 
       - name: 📤 Commit and push downloaded files
-        if: ${{ github.event.inputs.url != '' }}
+        if: ${{ github.event.inputs.url != '' && success() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
