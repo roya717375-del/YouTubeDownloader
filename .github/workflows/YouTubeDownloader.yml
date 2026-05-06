@@ -1,31 +1,166 @@
-# ... (مراحل clone و نصب قبلی)
-- name: 🔎 Search YouTube via Google/YouTube and save results
-  if: ${{ github.event.inputs.search_query != '' && github.event.inputs.url == '' }}
-  run: |
-    SEARCH="${{ github.event.inputs.search_query }}"
-    OUTPUT_FILE="search_results.txt"
-    echo "🟢 جستجو برای: $SEARCH" | tee -a "$OUTPUT_FILE"
-    echo "======================================" | tee -a "$OUTPUT_FILE"
-    
-    # نصب کتابخانه جستجو
-    python3 -m pip install youtube-search-python
-    
-    # استفاده از پایتون برای جستجو
-    python3 -c "
-from youtubesearchpython import VideosSearch
-import json
+name: 🔍 YouTube Search & Download
 
-search_query = '$SEARCH'
-videos_search = VideosSearch(search_query, limit=20)  # تعداد ۲۰ نتیجه
-results = videos_search.result()
+on:
+  workflow_dispatch:
+    inputs:
+      search_query:
+        description: '🔍 عبارت جستجو (برای جستجو)'
+        required: false
+        type: string
+      url:
+        description: '🎬 لینک مستقیم یوتیوب (برای دانلود)'
+        required: false
+        type: string
+      type:
+        description: '📦 نوع خروجی (برای دانلود)'
+        required: false
+        type: choice
+        options:
+          - video
+          - audio
+        default: 'video'
+      quality:
+        description: '🎚️ کیفیت (720p, 1080p, یا 128kbps)'
+        required: false
+        type: string
+        default: '720p'
 
-with open('$OUTPUT_FILE', 'a', encoding='utf-8') as f:
-    for idx, video in enumerate(results['result'], 1):
-        title = video['title']
-        link = f\"https://youtube.com/watch?v={video['id']}\"
-        f.write(f\"\n{idx}. 🎬 عنوان: {title}\n   🔗 لینک: {link}\n   {'-' * 60}\n\")
-print('✅ جستجو با موفقیت انجام شد.')
-"
-    echo "======================================" | tee -a "$OUTPUT_FILE"
-    echo "✅ نتایج در فایل 'search_results.txt' ذخیره شد."
-# ... (بقیه مراحل آپلود فایل)
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 📂 Clone repository
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install yt-dlp and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install yt-dlp
+          echo "✅ yt-dlp installed"
+
+      # ============================================
+      # حالت جستجو با YouTube API
+      # ============================================
+      - name: 🔎 Search YouTube via API and save results
+        if: ${{ github.event.inputs.search_query != '' && github.event.inputs.url == '' }}
+        env:
+          API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          SEARCH="${{ github.event.inputs.search_query }}"
+          OUTPUT_FILE="search_results.txt"
+          
+          if [ -z "$API_KEY" ]; then
+            echo "❌ YOUTUBE_API_KEY not found in secrets. Please add it."
+            exit 1
+          fi
+          
+          echo "🟢 جستجو برای: $SEARCH"
+          echo "======================================"
+          
+          # فراخوانی API گوگل
+          curl -s "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=20&q=$(echo $SEARCH | sed 's/ /%20/g')&type=video&key=$API_KEY" > search_raw.json
+          
+          # پردازش JSON و ساخت فایل متنی
+          python3 << 'PYEOF'
+          import json
+          import os
+          
+          SEARCH_TERM = os.environ.get('SEARCH', '')
+          OUTPUT_FILE = "search_results.txt"
+          
+          with open('search_raw.json', 'r') as f:
+              data = json.load(f)
+          
+          with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+              f.write(f"نتایج جستجو برای: {SEARCH_TERM}\n")
+              f.write(f"تاریخ: $(date)\n")
+              f.write("="*60 + "\n\n")
+              
+              items = data.get('items', [])
+              if not items:
+                  f.write("❌ هیچ نتیجه‌ای یافت نشد.\n")
+              else:
+                  for idx, item in enumerate(items, 1):
+                      snippet = item.get('snippet', {})
+                      title = snippet.get('title', 'بدون عنوان')
+                      channel = snippet.get('channelTitle', 'ناشناس')
+                      video_id = item.get('id', {}).get('videoId', '')
+                      url = f"https://youtu.be/{video_id}" if video_id else "نامشخص"
+                      description = snippet.get('description', '')[:150]
+                      
+                      f.write(f"{idx}. 🎬 عنوان: {title}\n")
+                      f.write(f"   📺 کانال: {channel}\n")
+                      f.write(f"   🔗 لینک: {url}\n")
+                      f.write(f"   📝 توضیحات: {description}\n")
+                      f.write("-"*60 + "\n\n")
+              
+              f.write(f"\n✅ تعداد نتایج: {len(items)}\n")
+          
+          print(f"✅ نتایج در فایل {OUTPUT_FILE} ذخیره شد.")
+          PYEOF
+          
+          # نمایش خلاصه در لاگ
+          echo "======================================"
+          head -40 search_results.txt
+          echo "======================================"
+          echo "✅ فایل search_results.txt در مخزن ذخیره شد."
+
+      # ============================================
+      # حالت دانلود (اگر url پر شده باشد)
+      # ============================================
+      - name: ⬇️ Download from URL
+        if: ${{ github.event.inputs.url != '' }}
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          TYPE="${{ github.event.inputs.type }}"
+          QUALITY="${{ github.event.inputs.quality }}"
+          
+          mkdir -p downloads
+          cd downloads
+          
+          echo "🟢 شروع دانلود از: $URL"
+          
+          if [[ "$TYPE" == "audio" ]]; then
+            yt-dlp -f bestaudio --extract-audio --audio-format mp3 \
+              --audio-quality 192K --output "%(title)s_%(id)s.%(ext)s" \
+              --no-check-certificate \
+              "$URL"
+          else
+            yt-dlp -f "best[height<=720]" \
+              --output "%(title)s_%(id)s.%(ext)s" \
+              --no-check-certificate \
+              "$URL"
+          fi
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ دانلود کامل شد."
+            ls -la
+          else
+            echo "❌ دانلود با خطا مواجه شد (exit code: $?)"
+            exit 1
+          fi
+          
+          cd ..
+
+      - name: 📤 Commit and push files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # اضافه کردن فایل نتایج جستجو در صورت وجود
+          if [ -f "search_results.txt" ]; then
+            git add search_results.txt
+          fi
+          
+          # اضافه کردن فایل‌های دانلود شده
+          if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
+            git add downloads/
+          fi
+          
+          git diff --staged --quiet || git commit -m "chore: add YouTube search results or content [skip ci]"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push origin HEAD:${{ github.ref_name }}
